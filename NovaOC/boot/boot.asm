@@ -1,6 +1,8 @@
-; boot/boot.asm
 BITS 16
 ORG 0x7C00
+
+KERNEL_OFFSET equ 0x100000
+KERNEL_SECTORS equ 64
 
 start:
     cli
@@ -14,12 +16,17 @@ start:
     mov [boot_drive], dl
 
     mov si, msg_boot
-    call print_string
+    call print_string_16
 
     call enable_a20
 
+    mov si, msg_kernel
+    call print_string_16
+
+    call load_kernel
+
     mov si, msg_gdt
-    call print_string
+    call print_string_16
 
     cli
     lgdt [gdt_descriptor]
@@ -30,7 +37,7 @@ start:
 
     jmp CODE_SEG:protected_mode
 
-print_string:
+print_string_16:
     lodsb
     or al, al
     jz .done
@@ -38,7 +45,7 @@ print_string:
     mov bh, 0x00
     mov bl, 0x07
     int 0x10
-    jmp print_string
+    jmp print_string_16
 .done:
     ret
 
@@ -47,6 +54,32 @@ enable_a20:
     or al, 2
     out 0x92, al
     ret
+
+load_kernel:
+    mov ax, KERNEL_OFFSET >> 4
+    mov es, ax
+    xor bx, bx
+
+    mov ah, 0x02
+    mov al, KERNEL_SECTORS
+    mov ch, 0x00
+    mov cl, 0x02
+    mov dh, 0x00
+    mov dl, [boot_drive]
+    int 0x13
+
+    jc .disk_error
+
+    mov si, msg_kernel_ok
+    call print_string_16
+    ret
+
+.disk_error:
+    mov si, msg_disk_error
+    call print_string_16
+    cli
+    hlt
+    jmp .disk_error
 
 BITS 32
 
@@ -62,21 +95,30 @@ protected_mode:
     mov esi, msg_protected
     call print_string_32
 
-    call 0x10000
-
-    jmp $
+    jmp KERNEL_OFFSET
 
 print_string_32:
+    push eax
+    push ebx
+    push edi
+    mov edi, [vga_offset]
+    mov ebx, 0xB8000
+
+.loop:
     lodsb
     or al, al
     jz .done
+
     mov ah, 0x0F
-    mov [0xB8000], ax
-    add dword [vga_offset], 2
-    mov edi, [vga_offset]
-    mov byte [0xB8000 + edi], 0
-    jmp print_string_32
+    mov [ebx + edi], ax
+    add edi, 2
+    jmp .loop
+
 .done:
+    mov [vga_offset], edi
+    pop edi
+    pop ebx
+    pop eax
     ret
 
 vga_offset dd 0
@@ -111,9 +153,12 @@ DATA_SEG equ gdt_data - gdt_start
 
 boot_drive db 0
 
-msg_boot db "NovaOS booting...", 0
-msg_gdt  db "Loading GDT...", 0
-msg_protected db "Protected mode OK!", 0
+msg_boot        db "NovaOS booting...", 13, 10, 0
+msg_kernel      db "Loading kernel...", 13, 10, 0
+msg_kernel_ok   db "Kernel loaded OK", 13, 10, 0
+msg_disk_error  db "DISK ERROR!", 13, 10, 0
+msg_gdt         db "Loading GDT...", 13, 10, 0
+msg_protected   db "Protected mode OK!", 0
 
 times 510 - ($ - $$) db 0
 dw 0xAA55
